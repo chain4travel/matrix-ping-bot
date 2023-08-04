@@ -1,0 +1,22 @@
+{
+  "name": "matrix-hello-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "main.ts",
+  "scripts": {
+    "build": "npx tsc && find dist/ -name *.js -print0 | xargs -0 rename -f 's/.js$/.mjs/'",
+    "ping": "npm run build && node dist/bot-ping.mjs",
+    "pong": "npm run build && node dist/bot-pong.mjs",
+    "register": "npm run build && node dist/register.mjs",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "async-mutex": "^0.4.0",
+    "matrix-bot-sdk": "^0.6.6"
+  },
+  "devDependencies": {
+    "typescript": "^5.1.6"
+  }
+}
