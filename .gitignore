@@ -2,3 +2,4 @@ dist
 node_modules
 ping-bot.json
 pong-bot.json
+*.log
