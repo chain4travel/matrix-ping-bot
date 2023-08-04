@@ -6,6 +6,10 @@ import {
 
 import { Mutex } from "async-mutex";
 
+const sleep = (milliseconds : number) => {
+	return new Promise(resolve => setTimeout(resolve, milliseconds))
+}
+
 function minMaxAvg(arr : number[]) {
 	var max = arr[0];
 	var min = arr[0];
@@ -71,14 +75,15 @@ let parallel_rooms_testvalues = {
 	roundrtip_number: 0,
 	pongcount: 0,
 	pongcountmutext: new Mutex(),
-	initial_roomid: ""
+	initial_roomid: "", 
+	latencies: [0]
 }
 
 // Now that everything is set up, start the bot. This will start the sync loop and run until killed.
 client.start().then(() => console.log("Ping bot started!"));
 
 async function handleRoomMessage(roomId: string, event: any) {
-	console.log("RoomMessage: (rid=" + roomId + "):", event);
+	//console.log("RoomMessage: (rid=" + roomId + "):", event);
 
     // Don't handle unhelpful events (ones that aren't text messages, are redacted, or sent by us)
     if (event['content']?.['msgtype'] !== 'm.text') return;
@@ -110,7 +115,7 @@ async function handleRoomMessage(roomId: string, event: any) {
 			roundtrip_testvalues.endtime = Date.now();
 			let content = "roundtrip test finished\n"
 						+	"took " + (roundtrip_testvalues.endtime - roundtrip_testvalues.starttime) + "ms\n"
-						+	"requests per second: " + (roundtrip_testvalues.number / ((roundtrip_testvalues.endtime - roundtrip_testvalues.starttime)/1000) ) + "\n"
+						+	"roundtrips per second: " + (roundtrip_testvalues.number / ((roundtrip_testvalues.endtime - roundtrip_testvalues.starttime)/1000) ) + "\n"
 						+ 	"latencies (min,max,avg): " + JSON.stringify(minMaxAvg(roundtrip_testvalues.latencies));
 			client.sendText(roomId, content);
 		}
@@ -151,21 +156,29 @@ async function handleRoomMessage(roomId: string, event: any) {
 		}
 		else {
 			let number = body.split(" ")[1];
+			let timestamp = body.split(" ")[2];
+
+			let time_diff = Date.now() - timestamp;
 
 			if (number > 1) {
-				let content = "par_room_ping " + (number-1);
+				let content = "par_room_ping " + (number-1) + " " + Date.now();
 				client.sendText(roomId, content);	
 			}
 	
 			const release = await parallel_rooms_testvalues.pongcountmutext.acquire();
 			parallel_rooms_testvalues.pongcount++;
+			parallel_rooms_testvalues.latencies.push(time_diff);
 			release();		
 	
 			if(parallel_rooms_testvalues.pongcount == parallel_rooms_testvalues.room_number * parallel_rooms_testvalues.roundrtip_number) {
 				parallel_rooms_testvalues.endtime = Date.now();
 				let content = "parallel rooms test finished\n"
+							+   "room number: " + parallel_rooms_testvalues.room_number + "\n"
+							+   "roundtrip number: " + parallel_rooms_testvalues.roundrtip_number + "\n"
+							+   "total roundtrips: " + (parallel_rooms_testvalues.room_number * parallel_rooms_testvalues.roundrtip_number) + "\n"
 							+	"took " + (parallel_rooms_testvalues.endtime - parallel_rooms_testvalues.starttime) + "ms\n"
-							+	"roundtrips per second: " + (parallel_rooms_testvalues.room_number * parallel_rooms_testvalues.roundrtip_number / ((parallel_rooms_testvalues.endtime - parallel_rooms_testvalues.starttime)/1000) ) + "";
+							+	"roundtrips per second: " + (parallel_rooms_testvalues.room_number * parallel_rooms_testvalues.roundrtip_number / ((parallel_rooms_testvalues.endtime - parallel_rooms_testvalues.starttime)/1000) ) + "\n"
+							+ 	"latencies (min,max,avg [ms]): " + JSON.stringify(minMaxAvg(parallel_rooms_testvalues.latencies));
 				client.sendText(parallel_rooms_testvalues.initial_roomid, content);
 			}
 		}		
@@ -183,25 +196,21 @@ async function handleRoomMessage(roomId: string, event: any) {
 		else {
 			let roundrtip_number = body.split(" ")[2];
 
-			parallel_rooms_testvalues.starttime = Date.now();
 			parallel_rooms_testvalues.endtime = 0;
 			parallel_rooms_testvalues.room_number = room_number;
 			parallel_rooms_testvalues.roundrtip_number = roundrtip_number;
 			parallel_rooms_testvalues.pongcount = 0;
 			parallel_rooms_testvalues.initial_roomid = roomId;
+			parallel_rooms_testvalues.latencies = [];
 	
-			let content = "creating new testrooms with aliases: ";
-			let aliases = [];
-			for(let i = 0; i < room_number; i++) {
-				aliases.push("\"#!testroom" + i + ":" + server_identifier + "\"");
-			}
-			content += '[' +  aliases.join(", ") + ']';
-	
-			client.sendText(roomId, content);			
+			let content = "Starting test - joining / creating rooms";
+			client.sendText(roomId, content);
 	
 			// get the rooms this bot is already in
 			let joined_rooms = await client.getJoinedRooms();
 			console.log(joined_rooms);
+
+			let rids = [];
 	
 			for(let i = 0; i < room_number; i++) {
 				// create a new room if the bot is not already in a room with the same alias
@@ -220,17 +229,40 @@ async function handleRoomMessage(roomId: string, event: any) {
 					if(!joined_rooms.some(room => room.includes(rid))) {
 						console.log("joining room alias: " + alias);
 						rid = await client.joinRoom(alias);
-						await client.inviteUser("@pongbot:" + server_identifier, roomId);
 					}				
 				}
 				else {
 					console.log("creating new room with alias: " + alias);
 					rid = await client.createRoom({room_alias_name: "!testroom" + i, visibility: "public"});
-					await client.inviteUser("@pongbot:" + server_identifier, roomId);
 				}
-	
-				let content = "par_room_ping " + roundrtip_number;
-				client.sendText(rid, content);
+				rids.push(rid);
+			}
+
+			// invite pongbot to all rooms
+			content = "Inviting pongbot to all rooms";
+			client.sendText(roomId, content);
+
+			for(let rid of rids) {
+				// get room members of the room
+				let pongbot_id = "@pongbot:" + server_identifier;
+				let members = await client.getJoinedRoomMembers(rid);
+
+				if( !members.some(member => member.includes(pongbot_id)) ) {
+					await client.inviteUser(pongbot_id, rid);
+				}				
+			}
+
+			parallel_rooms_testvalues.starttime = Date.now();
+
+			// sleep for 1000ms to make sure all invites are processed
+			await sleep(1000);
+			
+			content = "Sending messages";
+			client.sendText(roomId, content);
+
+			for(let rid of rids) {
+				let content = "par_room_ping " + roundrtip_number + " " + Date.now();
+				client.sendText(rid, content);	
 			}
 		}		
 	}
