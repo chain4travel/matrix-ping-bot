@@ -1,16 +1,20 @@
 import { 
     MatrixClient,
     SimpleFsStorageProvider,
-    AutojoinRoomsMixin
+    AutojoinRoomsMixin,
+	LogService,
+	LogLevel,
+	RichConsoleLogger
 } from "matrix-bot-sdk";
 
+import fs from 'fs';
 import { Mutex } from "async-mutex";
 
 const sleep = (milliseconds : number) => {
 	return new Promise(resolve => setTimeout(resolve, milliseconds))
 }
 
-function minMaxAvg(arr : number[]) {
+function minMaxAvg(arr : number[]) : number[] {
 	var max = arr[0];
 	var min = arr[0];
 	var sum = 0 ;
@@ -25,15 +29,33 @@ function minMaxAvg(arr : number[]) {
 	return [min,max,avg];
 }
 
+// read the configuration which has been written by register.ts
+if(process.argv.length < 3) {
+	console.log("Please specify a config file name as argument");
+	process.exit(1);
+}
+let configname = process.argv[2];
+let config = JSON.parse(fs.readFileSync(configname, 'utf8'));
 
-const server_identifier = "matrix.camino.network";
+const server_identifier = config.hs_host;
+const server_port = config.hs_port; 
+
+// Beware - the pongbot id is without the port for dendrite and conduit but with the port for synapse!
+let pongbot_id = "@" + config.pongbot.username + ":" + server_identifier;
+if(config.hs_type === "synapse") {
+	pongbot_id += ":" + server_port;
+}
+
+LogService.setLogger(new RichConsoleLogger());
+LogService.setLevel(LogLevel.DEBUG);
+
 // This will be the URL where clients can reach your homeserver. Note that this might be different
 // from where the web/chat interface is hosted. The server must support password registration without
 // captcha or terms of service (public servers typically won't work).
-const homeserverUrl = "https://" + server_identifier;
+const homeserverUrl = config.hs_proto + "://" + server_identifier + ":" + server_port;
 
-// Use the access token you got from login or registration above.
-const accessToken = "syt_Ym90dGVzdGFjY291bnQ_UVJxaUJbVFPnBpISCNNL_0KTHue";
+// Access tokens are read from the configuration
+const accessToken = config.pingbot.token;
 
 // In order to make sure the bot doesn't lose its state between restarts, we'll give it a place to cache
 // any information it needs to. You can implement your own storage provider if you like, but a JSON file
@@ -76,11 +98,14 @@ let parallel_rooms_testvalues = {
 	pongcount: 0,
 	pongcountmutext: new Mutex(),
 	initial_roomid: "", 
-	latencies: [0]
+	latencies: [0],
+	test_room_ids: [""]
 }
 
 // Now that everything is set up, start the bot. This will start the sync loop and run until killed.
-client.start().then(() => console.log("Ping bot started!"));
+client.start().then(async function() {
+	console.log("Ping bot started! UserID: " + (await client.getUserId()));
+});
 
 async function handleRoomMessage(roomId: string, event: any) {
 	//console.log("RoomMessage: (rid=" + roomId + "):", event);
@@ -168,7 +193,7 @@ async function handleRoomMessage(roomId: string, event: any) {
 			const release = await parallel_rooms_testvalues.pongcountmutext.acquire();
 			parallel_rooms_testvalues.pongcount++;
 			parallel_rooms_testvalues.latencies.push(time_diff);
-			release();		
+			release();
 	
 			if(parallel_rooms_testvalues.pongcount == parallel_rooms_testvalues.room_number * parallel_rooms_testvalues.roundrtip_number) {
 				parallel_rooms_testvalues.endtime = Date.now();
@@ -180,6 +205,10 @@ async function handleRoomMessage(roomId: string, event: any) {
 							+	"roundtrips per second: " + (parallel_rooms_testvalues.room_number * parallel_rooms_testvalues.roundrtip_number / ((parallel_rooms_testvalues.endtime - parallel_rooms_testvalues.starttime)/1000) ) + "\n"
 							+ 	"latencies (min,max,avg [ms]): " + JSON.stringify(minMaxAvg(parallel_rooms_testvalues.latencies));
 				client.sendText(parallel_rooms_testvalues.initial_roomid, content);
+
+				for(let room_id of parallel_rooms_testvalues.test_room_ids) {
+					await client.leaveRoom(room_id);
+				}
 			}
 		}		
 	}
@@ -202,69 +231,48 @@ async function handleRoomMessage(roomId: string, event: any) {
 			parallel_rooms_testvalues.pongcount = 0;
 			parallel_rooms_testvalues.initial_roomid = roomId;
 			parallel_rooms_testvalues.latencies = [];
+			parallel_rooms_testvalues.test_room_ids = [];
 	
 			let content = "Starting test - joining / creating rooms";
 			client.sendText(roomId, content);
-	
-			// get the rooms this bot is already in
-			let joined_rooms = await client.getJoinedRooms();
-			console.log(joined_rooms);
 
-			let rids = [];
-	
+			let room_creation_promises = [];
 			for(let i = 0; i < room_number; i++) {
-				// create a new room if the bot is not already in a room with the same alias
-				
-				let alias = "#!testroom" + i + ":" + server_identifier;
-				let rid = "";
-				try {
-					rid = (await client.lookupRoomAlias(alias)).roomId;
-				}
-				catch(e) {
-					console.log("room alias does not exist");
-				}
-				
-				if(rid !== "") {				
-					console.log("found room with alias " + alias + " with room id: " + rid);
-					if(!joined_rooms.some(room => room.includes(rid))) {
-						console.log("joining room alias: " + alias);
-						rid = await client.joinRoom(alias);
-					}				
-				}
-				else {
-					console.log("creating new room with alias: " + alias);
-					rid = await client.createRoom({room_alias_name: "!testroom" + i, visibility: "public"});
-				}
-				rids.push(rid);
+				room_creation_promises.push(client.createRoom(
+					{
+						visibility: "private", 
+						invite: [ pongbot_id ],
+						creation_content: {
+							"m.federate": false
+						}
+					}
+				));
 			}
+			parallel_rooms_testvalues.test_room_ids = await Promise.all(room_creation_promises);
 
-			// invite pongbot to all rooms
-			content = "Inviting pongbot to all rooms";
-			client.sendText(roomId, content);
-
-			for(let rid of rids) {
-				// get room members of the room
-				let pongbot_id = "@pongbot:" + server_identifier;
-				let members = await client.getJoinedRoomMembers(rid);
-
-				if( !members.some(member => member.includes(pongbot_id)) ) {
-					await client.inviteUser(pongbot_id, rid);
-				}				
-			}
+			// sleep for 1000ms to make sure all room creations and invites are processed
+			await sleep(1000);
 
 			parallel_rooms_testvalues.starttime = Date.now();
-
-			// sleep for 1000ms to make sure all invites are processed
-			await sleep(1000);
 			
 			content = "Sending messages";
 			client.sendText(roomId, content);
 
-			for(let rid of rids) {
+			for(let rid of parallel_rooms_testvalues.test_room_ids) {
 				let content = "par_room_ping " + roundrtip_number + " " + Date.now();
 				client.sendText(rid, content);	
 			}
 		}		
+	}
+
+	if(body?.startsWith("reset")) {
+		// Leave all the joined rooms except the one this message was sent in
+		let joined_rooms = await client.getJoinedRooms();
+		for(let rid of joined_rooms) {
+			if(rid !== roomId) {
+				await client.leaveRoom(rid);
+			}
+		}
 	}
 
 	if(body?.startsWith("help")) {
@@ -272,7 +280,8 @@ async function handleRoomMessage(roomId: string, event: any) {
 					+	"parallel <number> - start parallel test\n"
 					+	"par_rooms <room_number> <roundtrip_number> - start parallel rooms test\n"
 					+	"par_rooms stop - stop parallel rooms test\n"
-					+	"testvalues - show current testvalues";
+					+	"testvalues - show current testvalues\n"
+					+	"reset - leave all rooms except the one this message was sent in";
 		client.sendText(roomId, content);
 	}
 
@@ -305,6 +314,11 @@ async function handleRoomJoin(roomId: string, event: any) {
 
 async function handleRoomLeave(roomId: string, event: any) {
 	console.log("RoomLeave: (rid=" + roomId + "):", event);
+
+	if(event.content?.sender === await client.getUserId()) {
+		//We left the room, so we should forget it
+		await client.forgetRoom(roomId);
+	}
 }
 
 
