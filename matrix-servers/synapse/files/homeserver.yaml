@@ -1,0 +1,46 @@
+# Configuration file for Synapse.
+#
+# This is a YAML file: see [1] for a quick introduction. Note in particular
+# that *indentation is important*: all the elements of a list or dictionary
+# should have the same indentation.
+#
+# [1] https://docs.ansible.com/ansible/latest/reference_appendices/YAMLSyntax.html
+#
+# For more information on how to configure Synapse, including a complete accounting of
+# each option, go to docs/usage/configuration/config_documentation.md or
+# https://element-hq.github.io/synapse/latest/usage/configuration/config_documentation.html
+server_name: "localhost"
+pid_file: /data/homeserver.pid
+listeners:
+  - port: 8008
+    tls: false
+    type: http
+    x_forwarded: true
+    resources:
+      - names: [client, federation]
+        compress: false
+database:
+  name: psycopg2
+  txn_limit: 10000
+  args:
+    user: synapse_user
+    password: testPassword
+    database: synapse
+    host: db
+    port: 5432
+    cp_min: 5
+    cp_max: 10
+log_config: "/data/localhost.log.config"
+enable_registration: true
+enable_registration_without_verification: true
+media_store_path: /data/media_store
+registration_shared_secret: "mbI-2,P&5:NHA@PTJNm;,Tihi9Tkbs@^CD#btEeeYf6trnlo*b"
+report_stats: true
+macaroon_secret_key: "tYf.C4par~OE3UoejgdcGSPVN&ZIwqSCRPdz.eOQglQScT=8I."
+form_secret: "2A6gRysda;j~0*0.lqbSG_P9Gn4d@Mf&8j^y~&5tg#IfXmiKKR"
+signing_key_path: "/data/localhost.signing.key"
+trusted_key_servers:
+  - server_name: "matrix.org"
+
+
+# vim:ft=yaml
